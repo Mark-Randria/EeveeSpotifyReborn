@@ -28,6 +28,11 @@ class SPTDataLoaderServiceHook: ClassHook<NSObject>, SpotifySessionDelegate {
             return
         }
         
+        // [EeveeDownload spike] Pure observation — marker for completed audio key exchanges.
+        if error == nil, url.isAudioKeyExchangeURL {
+            NSLog("[EeveeDownload] audio key exchange completed: \(url.absoluteString)")
+        }
+        
         guard error == nil, shouldModify(url) else {
             orig.URLSession(session, task: task, didCompleteWithError: error)
             return
@@ -116,6 +121,24 @@ class SPTDataLoaderServiceHook: ClassHook<NSObject>, SpotifySessionDelegate {
     ) {
         guard let url = task.currentRequest?.url else {
             return
+        }
+
+        // [EeveeDownload spike] Pure observation — never alters control flow.
+        // Runs BEFORE all existing logic; observed URLs still fall through to
+        // `orig` / `shouldModify` exactly as before.
+        AudioStreamCapture.shared.observe(
+            url,
+            headers: task.currentRequest?.allHTTPHeaderFields,
+            bodyPrefix: nil,
+            response: data
+        )
+
+        if let statusCode = (task.response as? HTTPURLResponse)?.statusCode {
+            AudioStreamCapture.shared.noteStatus(statusCode, for: url)
+        }
+
+        if url.isAudioKeyExchangeURL || url.isAudioStreamURL {
+            AudioStreamCapture.shared.observeAudioResponse(url, data: data)
         }
 
         if shouldModify(url) {
