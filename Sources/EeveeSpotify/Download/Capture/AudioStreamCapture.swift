@@ -62,7 +62,7 @@ final class AudioStreamCapture {
             if let response = response {
                 log += " respHead=\(AudioStreamCapture.hexPrefix(response))"
             }
-            NSLog("\(log)")
+            DownloadLogger.shared.log("\(log)")
 
             if url.isAudioStreamURL {
                 self.recordStreamURL(url)
@@ -88,8 +88,8 @@ final class AudioStreamCapture {
 
             guard let key = AudioKeyExtractor.extractKey(from: buffer) else {
                 if !data.isEmpty {
-                    NSLog(
-                        "[EeveeDownload] key exchange chunk buffered (buffer \(buffer.count) bytes) url=\(url.absoluteString)"
+                    DownloadLogger.shared.log(
+                        "key exchange chunk buffered (buffer \(buffer.count) bytes) url=\(url.absoluteString)"
                     )
                 }
                 self._keyResponseBuffers[url] = buffer
@@ -99,7 +99,7 @@ final class AudioStreamCapture {
             self._keyResponseBuffers.removeValue(forKey: url)
 
             guard let gid = self.trackGID(from: url) ?? self.currentTrackID(), !gid.isEmpty else {
-                NSLog("[EeveeDownload] extracted audio key but no track gid resolvable")
+                DownloadLogger.shared.log(" extracted audio key but no track gid resolvable")
                 return
             }
 
@@ -107,8 +107,8 @@ final class AudioStreamCapture {
             let stream = AudioStream(trackGID: gid, key: key, url: streamURL)
             self._streamsByGID[gid] = stream
             self._latestStream = stream
-            NSLog(
-                "[EeveeDownload] captured audio key (\(key.count) bytes) gid=\(gid) cdn=\(streamURL.absoluteString)"
+            DownloadLogger.shared.log(
+                " captured audio key (\(key.count) bytes) gid=\(gid) cdn=\(streamURL.absoluteString)"
             )
         }
     }
@@ -119,7 +119,7 @@ final class AudioStreamCapture {
             guard url.isAudioStreamURL || url.isAudioKeyExchangeURL || url.isSpotifyAPIURL else {
                 return
             }
-            NSLog("[EeveeDownload] HTTP \(statusCode) for \(url.absoluteString)")
+            DownloadLogger.shared.log(" HTTP \(statusCode) for \(url.absoluteString)")
         }
     }
 
@@ -153,12 +153,12 @@ final class AudioStreamCapture {
         }
 
         _bearerToken = token
-        NSLog("[EeveeDownload] captured bearer token (\(String(token.prefix(8)))...)")
+        DownloadLogger.shared.log(" captured bearer token (\(String(token.prefix(8)))...)")
     }
 
     private func recordStreamURL(_ url: URL) {
         guard let gid = trackGID(from: url) ?? currentTrackID(), !gid.isEmpty else {
-            NSLog("[EeveeDownload] audio stream URL with no resolvable track gid: \(url.absoluteString)")
+            DownloadLogger.shared.log(" audio stream URL with no resolvable track gid: \(url.absoluteString)")
             return
         }
 
@@ -168,9 +168,9 @@ final class AudioStreamCapture {
             existing = AudioStream(trackGID: gid, key: existing.key, url: url)
             _streamsByGID[gid] = existing
             _latestStream = existing
-            NSLog("[EeveeDownload] CDN url updated gid=\(gid) url=\(url.absoluteString)")
+            DownloadLogger.shared.log(" CDN url updated gid=\(gid) url=\(url.absoluteString)")
         } else {
-            NSLog("[EeveeDownload] CDN url pending (waiting for key) gid=\(gid) url=\(url.absoluteString)")
+            DownloadLogger.shared.log(" CDN url pending (waiting for key) gid=\(gid) url=\(url.absoluteString)")
         }
     }
 

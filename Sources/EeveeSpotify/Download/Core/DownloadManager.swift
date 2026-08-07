@@ -315,6 +315,19 @@ final class DownloadManager {
         _state = newState
         lock.unlock()
 
+        switch newState {
+        case .downloading(let progress):
+            if progress == 0 {
+                DownloadLogger.shared.log("download started")
+            }
+        case .finished(let url):
+            DownloadLogger.shared.log("download finished url=\(url.absoluteString)")
+        case .failed(let message):
+            DownloadLogger.shared.log("download failed: \(message)")
+        case .idle:
+            break
+        }
+
         DispatchQueue.main.async {
             NotificationCenter.default.post(
                 name: DownloadManager.stateDidChangeNotification,
