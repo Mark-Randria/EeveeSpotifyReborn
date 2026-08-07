@@ -146,17 +146,17 @@ enum StreamDecryptor {
                     return CCCryptorStatus(kCCMemoryFailure)
                 }
                 return CCCryptorCreateWithMode(
-                    kCCDecrypt,
-                    kCCModeCTR,
-                    kCCAlgorithmAES,
-                    ccNoPadding,
+                    CCOperation(kCCDecrypt),
+                    CCMode(kCCModeCTR),
+                    CCAlgorithm(kCCAlgorithmAES),
+                    CCPadding(ccNoPadding),
                     ivBase,
                     keyBase,
                     key.count,
                     nil,
                     0,
                     0,
-                    kCCModeOptionCTR_BE,
+                    CCModeOptions(kCCModeOptionCTR_BE),
                     &cryptor
                 )
             }

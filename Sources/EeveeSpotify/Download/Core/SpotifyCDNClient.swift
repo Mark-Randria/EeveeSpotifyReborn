@@ -22,6 +22,7 @@ final class SpotifyCDNClient {
     private static let audioExtensions: Set<String> = ["mp4", "m4a", "aac", "ogg", "mp3", "opus"]
 
     private let session: URLSession
+    private let downloadDelegate: DownloadProgressDelegate
     private let fileManager = FileManager.default
 
     private init() {
@@ -34,7 +35,12 @@ final class SpotifyCDNClient {
         configuration.timeoutIntervalForResource = 600
         configuration.waitsForConnectivity = true
 
-        session = URLSession(configuration: configuration)
+        // iOS 14 target: the async `URLSession.download(from:delegate:)`
+        // convenience is iOS 15+ only, so the session uses a classic delegate
+        // bridged to async via a continuation in `downloadEncryptedStream`.
+        let delegate = DownloadProgressDelegate()
+        downloadDelegate = delegate
+        session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
 
     /// Downloads the encrypted stream to a temp file (streamed by URLSession),
@@ -54,22 +60,18 @@ final class SpotifyCDNClient {
             .appendingPathComponent("EeveeStream-\(UUID().uuidString)")
         defer { try? fileManager.removeItem(at: stagedURL) }
 
-        let progressDelegate = DownloadProgressDelegate { written in
-            progress?(written * 0.5)
-        }
+        // The delegate moves the downloaded file into `stagedURL` synchronously
+        // inside `didFinishDownloadingTo` (URLSession deletes the temp file once
+        // the callback returns), then resumes the continuation with `stagedURL`.
+        let downloadedLocation = try await withCheckedThrowingContinuation { continuation in
+            downloadDelegate.beginDownload(
+                progress: { written in progress?(written * 0.5) },
+                stagingURL: stagedURL,
+                continuation: continuation
+            )
 
-        let (downloadedLocation, response) = try await session.download(from: url, delegate: progressDelegate)
-
-        if let httpResponse = response as? HTTPURLResponse,
-            !(200..<300).contains(httpResponse.statusCode) {
-            throw CDNError.httpStatus(httpResponse.statusCode)
-        }
-
-        do {
-            try fileManager.moveItem(at: downloadedLocation, to: stagedURL)
-        }
-        catch let error {
-            throw CDNError.moveTempFile(error.localizedDescription)
+            let task = session.downloadTask(with: url)
+            task.resume()
         }
 
         // 2. Decrypt into the final file inside the downloads directory.
@@ -80,7 +82,7 @@ final class SpotifyCDNClient {
 
         do {
             try StreamDecryptor.decryptStream(
-                input: stagedURL,
+                input: downloadedLocation,
                 output: finalURL,
                 key: key,
                 progress: { decrypted in
@@ -106,14 +108,72 @@ final class SpotifyCDNClient {
     }
 }
 
-/// Receives `URLSessionDownloadTask` progress callbacks while the per-task async
-/// download runs (progress is otherwise unavailable on the async API).
+/// Session delegate for download tasks. Bridges the classic delegate callbacks
+/// to the async continuation in `SpotifyCDNClient.downloadEncryptedStream`.
+/// The continuation is always resumed exactly once (success or error).
 private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
-    private let onProgress: (Double) -> Void
+    private let lock = NSLock()
+    private var onProgress: ((Double) -> Void)?
+    private var stagingURL: URL?
+    private var continuation: CheckedContinuation<URL, Error>?
 
-    init(onProgress: @escaping (Double) -> Void) {
-        self.onProgress = onProgress
-        super.init()
+    func beginDownload(
+        progress: @escaping (Double) -> Void,
+        stagingURL: URL,
+        continuation: CheckedContinuation<URL, Error>
+    ) {
+        lock.lock()
+        onProgress = progress
+        self.stagingURL = stagingURL
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    private func resumeContinuation(_ result: Result<URL, Error>) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        onProgress = nil
+        stagingURL = nil
+        lock.unlock()
+
+        switch result {
+        case .success(let url):
+            continuation?.resume(returning: url)
+        case .failure(let error):
+            continuation?.resume(throwing: error)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        if let httpResponse = downloadTask.response as? HTTPURLResponse,
+            !(200..<300).contains(httpResponse.statusCode) {
+            resumeContinuation(.failure(SpotifyCDNClient.CDNError.httpStatus(httpResponse.statusCode)))
+            return
+        }
+
+        lock.lock()
+        let stagingURL = self.stagingURL
+        lock.unlock()
+
+        guard let stagingURL = stagingURL else {
+            resumeContinuation(.failure(SpotifyCDNClient.CDNError.moveTempFile("missing staging URL")))
+            return
+        }
+
+        // Must move the file before returning: URLSession deletes the location
+        // file once this callback completes.
+        do {
+            try FileManager.default.moveItem(at: location, to: stagingURL)
+            resumeContinuation(.success(stagingURL))
+        }
+        catch let error {
+            resumeContinuation(.failure(SpotifyCDNClient.CDNError.moveTempFile(error.localizedDescription)))
+        }
     }
 
     func urlSession(
@@ -124,14 +184,15 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
         totalBytesExpectedToWrite: Int64
     ) {
         guard totalBytesExpectedToWrite > 0 else { return }
-        onProgress(min(1.0, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)))
+        lock.lock()
+        let progress = onProgress
+        lock.unlock()
+        progress?(min(1.0, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)))
     }
 
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        // Not used; the async wrapper returns the file location directly.
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            resumeContinuation(.failure(error))
+        }
     }
 }
