@@ -170,8 +170,13 @@ enum StreamDecryptor {
         var output = [UInt8](repeating: 0, count: chunk.count)
         var moved = 0
 
+        // Copy to a local so the in-place decrypt runs on the copy and the
+        // buffer access doesn't overlap the `output` variable (Swift
+        // exclusive-access rule). Write back once after decrypting.
+        let outputCount = output.count
+        var decrypted = output
         let updateStatus: CCCryptorStatus = chunk.withUnsafeBytes { inputBuffer in
-            output.withUnsafeMutableBytes { outputBuffer in
+            decrypted.withUnsafeMutableBytes { outputBuffer in
                 guard let inputBase = inputBuffer.baseAddress, let outputBase = outputBuffer.baseAddress else {
                     return CCCryptorStatus(kCCMemoryFailure)
                 }
@@ -180,11 +185,12 @@ enum StreamDecryptor {
                     inputBase,
                     chunk.count,
                     outputBase,
-                    output.count,
+                    outputCount,
                     &moved
                 )
             }
         }
+        output = decrypted
 
         guard updateStatus == kCCSuccess, moved == chunk.count else {
             throw DecryptError.cryptoFailure(Int32(updateStatus))
